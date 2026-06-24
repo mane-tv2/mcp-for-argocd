@@ -6,16 +6,31 @@ export interface HttpResponse<T> {
 
 type SearchParams = Record<string, string | number | boolean | undefined | null> | null;
 
+// A dynamic source of ArgoCD API tokens. Used for SSO, where the bearer token
+// (an OIDC id token) is refreshed over time and therefore must be resolved per
+// request rather than captured once.
+export type TokenProvider = () => Promise<string>;
+
 export class HttpClient {
   public readonly baseUrl: string;
-  public readonly apiToken: string;
-  public readonly headers: Record<string, string>;
+  // The original token value as supplied. For the static (API-token) case this
+  // is the token string; for SSO it is the dynamic provider function. Retained
+  // for inspection/diagnostics — requests always resolve the token via
+  // tokenProvider so refreshed SSO tokens are honoured.
+  public readonly apiToken: string | TokenProvider;
+  private readonly tokenProvider: TokenProvider;
 
-  constructor(baseUrl: string, apiToken: string) {
+  constructor(baseUrl: string, apiToken: string | TokenProvider) {
     this.baseUrl = baseUrl;
     this.apiToken = apiToken;
-    this.headers = {
-      Authorization: `Bearer ${this.apiToken}`,
+    this.tokenProvider = typeof apiToken === 'function' ? apiToken : async () => apiToken;
+  }
+
+  // Build the request headers, resolving the (possibly refreshed) bearer token
+  // at call time so SSO token rotation is picked up transparently.
+  private async buildHeaders(): Promise<Record<string, string>> {
+    return {
+      Authorization: `Bearer ${await this.tokenProvider()}`,
       'Content-Type': 'application/json'
     };
   }
@@ -31,9 +46,10 @@ export class HttpClient {
         urlObject.searchParams.set(key, value?.toString() || '');
       });
     }
+    const headers = await this.buildHeaders();
     const response = await fetch(urlObject, {
       ...init,
-      headers: { ...init?.headers, ...this.headers }
+      headers: { ...init?.headers, ...headers }
     });
     const body = await response.json();
     return {
@@ -55,9 +71,10 @@ export class HttpClient {
         urlObject.searchParams.set(key, value?.toString() || '');
       });
     }
+    const headers = await this.buildHeaders();
     const response = await fetch(urlObject, {
       ...init,
-      headers: { ...init?.headers, ...this.headers }
+      headers: { ...init?.headers, ...headers }
     });
     const reader = response.body?.getReader();
     if (!reader) {

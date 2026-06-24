@@ -10,6 +10,7 @@ import {
   ResourceRefSchema
 } from '../shared/models/schema.js';
 import { TokenRegistry, tokenRegistryFromEnv } from './tokenRegistry.js';
+import { TokenProvider } from '../argocd/http.js';
 
 type ServerInfo = {
   argocdBaseUrl: string;
@@ -17,6 +18,10 @@ type ServerInfo = {
   // Optional registry mapping additional ArgoCD base URLs to their tokens. When
   // omitted, it is loaded from the ARGOCD_TOKEN_REGISTRY_PATH env var.
   tokenRegistry?: TokenRegistry;
+  // Optional dynamic token provider for the default base URL. Used for SSO,
+  // where the bearer token is an OIDC id token that is refreshed over time.
+  // When set, it supersedes argocdApiToken for the default base URL.
+  tokenProvider?: TokenProvider;
 };
 
 // Per-call argument that any tool may accept to target a specific ArgoCD
@@ -43,6 +48,7 @@ type ArgoCDArgs = {
 export class Server extends McpServer {
   private defaultBaseUrl: string;
   private defaultApiToken: string;
+  private tokenProvider?: TokenProvider;
   private tokenRegistry: TokenRegistry;
   private argocdClient: ArgoCDClient;
   // Cache per-credential clients to avoid rebuilding the HttpClient on every
@@ -57,8 +63,15 @@ export class Server extends McpServer {
     });
     this.defaultBaseUrl = serverInfo.argocdBaseUrl;
     this.defaultApiToken = serverInfo.argocdApiToken;
+    this.tokenProvider = serverInfo.tokenProvider;
     this.tokenRegistry = serverInfo.tokenRegistry ?? tokenRegistryFromEnv();
-    this.argocdClient = new ArgoCDClient(serverInfo.argocdBaseUrl, serverInfo.argocdApiToken);
+    // When an SSO token provider is configured, the default base URL's bearer
+    // token is resolved dynamically (and refreshed) via the provider; otherwise
+    // the static API token is used.
+    this.argocdClient = new ArgoCDClient(
+      serverInfo.argocdBaseUrl,
+      this.tokenProvider ?? serverInfo.argocdApiToken
+    );
 
     const isReadOnly =
       String(process.env.MCP_READ_ONLY ?? '')
@@ -409,6 +422,15 @@ export class Server extends McpServer {
     // must come from the registry — i.e. the operator explicitly registered it.
     const isDefaultBaseUrl =
       TokenRegistry.normalize(baseUrl) === TokenRegistry.normalize(this.defaultBaseUrl);
+
+    // SSO fast path: when a dynamic token provider is configured it is bound to
+    // the default base URL only (same exfiltration protection as the static
+    // default token). Reuse the pre-built SSO client, which resolves and
+    // refreshes the bearer token per request.
+    if (isDefaultBaseUrl && this.tokenProvider) {
+      return this.argocdClient;
+    }
+
     const apiToken = isDefaultBaseUrl
       ? this.defaultApiToken || this.tokenRegistry.getToken(baseUrl)
       : this.tokenRegistry.getToken(baseUrl);

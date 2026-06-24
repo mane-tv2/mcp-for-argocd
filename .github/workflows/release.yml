@@ -8,6 +8,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  packages: write
 
 jobs:
   release:
@@ -18,6 +19,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 'lts/*'
+          registry-url: 'https://npm.pkg.github.com'
       - uses: pnpm/action-setup@v4
       - name: Install dependencies
         run: pnpm install
@@ -25,11 +27,9 @@ jobs:
         run: pnpm run lint
       - name: Release
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: true
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
           VERSION=${GITHUB_REF#refs/tags/v}
           pnpm run build
           pnpm version $VERSION --no-git-tag-version
-          pnpm publish --access public --no-git-checks
+          pnpm publish --no-git-checks

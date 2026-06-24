@@ -7,21 +7,62 @@ import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { tokenRegistryFromEnv } from './tokenRegistry.js';
+import { SsoSession } from '../auth/ssoSession.js';
 
 // Load the base-URL -> token registry once at startup from the JSON file at
 // ARGOCD_TOKEN_REGISTRY_PATH. Shared across all connections; read-only after
 // construction.
 const tokenRegistry = tokenRegistryFromEnv();
 
-export const connectStdioTransport = () => {
+// Options controlling how the stdio server authenticates to ArgoCD.
+export type StdioOptions = {
+  // When true, perform an interactive OAuth2 (PKCE) SSO login at startup —
+  // mirroring `argocd login --sso` — instead of using a static API token.
+  sso?: boolean;
+  // Local port for the OAuth2 callback server (default 8085).
+  ssoPort?: number;
+  // Whether to automatically launch the system browser for SSO (default true).
+  ssoLaunchBrowser?: boolean;
+};
+
+export const connectStdioTransport = async (options: StdioOptions = {}) => {
+  const useSso =
+    options.sso ?? String(process.env.ARGOCD_AUTH_METHOD ?? '').toLowerCase() === 'sso';
+
+  const argocdBaseUrl = process.env.ARGOCD_BASE_URL || '';
+
+  let tokenProvider: (() => Promise<string>) | undefined;
+  let ssoSession: SsoSession | undefined;
+  if (useSso) {
+    if (!argocdBaseUrl) {
+      throw new Error('SSO login requires a base URL. Set the ARGOCD_BASE_URL env var.');
+    }
+    // Build the session but do NOT log in yet. The interactive browser flow is
+    // deferred until after the transport connects so the MCP initialize
+    // handshake is not blocked (a blocking login causes clients to report
+    // "-32000 connection closed").
+    ssoSession = new SsoSession({
+      baseUrl: argocdBaseUrl,
+      ssoPort: options.ssoPort,
+      launchBrowser: options.ssoLaunchBrowser
+    });
+    tokenProvider = ssoSession.getToken;
+  }
+
   const server = createServer({
-    argocdBaseUrl: process.env.ARGOCD_BASE_URL || '',
-    argocdApiToken: process.env.ARGOCD_API_TOKEN || '',
+    argocdBaseUrl,
+    argocdApiToken: useSso ? '' : process.env.ARGOCD_API_TOKEN || '',
+    tokenProvider,
     tokenRegistry
   });
 
   logger.info('Connecting to stdio transport');
-  server.connect(new StdioServerTransport());
+  await server.connect(new StdioServerTransport());
+
+  // Now that the transport is connected, warm the token in the background using
+  // only the cache / silent refresh (never opening a browser here). The
+  // interactive login, if needed, happens on the first tool call via getToken().
+  ssoSession?.prime();
 };
 
 export const connectSSETransport = (port: number) => {

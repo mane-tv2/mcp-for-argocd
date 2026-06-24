@@ -11,7 +11,7 @@ An implementation of [Model Context Protocol (MCP)](https://modelcontextprotocol
 const config = JSON.stringify({
   "name": "argocd-mcp",
   "command": "npx",
-  "args": ["argocd-mcp@latest", "stdio"],
+  "args": ["@mane-tv2/argocd-mcp@latest", "stdio"],
   "env": {
     "ARGOCD_BASE_URL": "<argocd_url>",
     "ARGOCD_API_TOKEN": "<argocd_token>"
@@ -65,6 +65,27 @@ The server provides the following ArgoCD management tools:
 - Argo CD instance with API access
 - Argo CD API token (see the [docs for instructions](https://argo-cd.readthedocs.io/en/stable/developer-guide/api-docs/#authorization)) 
 
+### Configure access to GitHub Packages
+
+This server is published to the [GitHub Packages npm registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry)
+as `@mane-tv2/argocd-mcp`. GitHub Packages requires authentication even for
+public packages, so before `npx` can install it you must point the
+`@mane-tv2` scope at the GitHub registry and provide a token with the
+`read:packages` scope.
+
+Create or update an `.npmrc` file in your home directory (`~/.npmrc`) with:
+
+```ini
+@mane-tv2:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=<your_github_token>
+```
+
+Alternatively, export the token in your environment so `npx` picks it up:
+
+```bash
+export NPM_CONFIG_USERCONFIG=~/.npmrc
+```
+
 ### Usage with Cursor
 1. Follow the [Cursor documentation for MCP support](https://docs.cursor.com/context/model-context-protocol), and create a `.cursor/mcp.json` file in your project:
 ```json
@@ -73,7 +94,7 @@ The server provides the following ArgoCD management tools:
     "argocd-mcp": {
       "command": "npx",
       "args": [
-        "argocd-mcp@latest",
+        "@mane-tv2/argocd-mcp@latest",
         "stdio"
       ],
       "env": {
@@ -97,7 +118,7 @@ The server provides the following ArgoCD management tools:
       "type": "stdio",
       "command": "npx",
       "args": [
-        "argocd-mcp@latest",
+        "@mane-tv2/argocd-mcp@latest",
         "stdio"
       ],
       "env": {
@@ -120,7 +141,7 @@ The server provides the following ArgoCD management tools:
     "argocd-mcp": {
       "command": "npx",
       "args": [
-        "argocd-mcp@latest",
+        "@mane-tv2/argocd-mcp@latest",
         "stdio"
       ],
       "env": {
@@ -159,6 +180,38 @@ The ArgoCD **API token is a secret and is only ever read from the transport laye
 - **Environment variables**: `ARGOCD_API_TOKEN` (all transports).
 
 This is the **default token**. It is **mandatory unless a [token registry](#token-registry--per-base-url-tokens-multi-instance) is configured**: on the HTTP transport, a connection that supplies no token (neither header nor env var) is rejected with `400 Bad Request`, but when a registry is configured a tokenless connection is allowed because each call resolves its own [registry token](#two-kinds-of-token). Keeping the token out of tool arguments ensures it never enters prompts, model context, or tool-call logs.
+
+#### SSO sign-in (stdio only)
+
+Instead of a static API token, the **stdio** transport can sign in interactively via SSO — the same OAuth2 authorization-code + PKCE flow that `argocd login --sso` uses. On startup the server reads the ArgoCD instance's OIDC settings (`/api/v1/settings`), starts a temporary local callback server, opens your browser to the identity provider, and exchanges the returned authorization code for an OIDC **id token** that is then used as the ArgoCD bearer token. The session is renewed automatically using the OIDC **refresh token**, so the server keeps working after the id token expires without prompting again.
+
+Enable it with the `--sso` flag (or `ARGOCD_AUTH_METHOD=sso`). `ARGOCD_BASE_URL` is required, and the ArgoCD instance must have SSO (OIDC or bundled Dex) configured:
+
+```jsonc
+{
+  "mcpServers": {
+    "argocd-mcp": {
+      "command": "npx",
+      "args": ["@mane-tv2/argocd-mcp@latest", "stdio", "--sso"],
+      "env": {
+        "ARGOCD_BASE_URL": "<argocd_url>"
+      }
+    }
+  }
+}
+```
+
+SSO options for the `stdio` command:
+
+| Flag | Env var | Default | Description |
+|---|---|---|---|
+| `--sso` | `ARGOCD_AUTH_METHOD=sso` | `false` | Authenticate via interactive SSO instead of a static API token. |
+| `--sso-port <port>` | — | `8085` | Local port for the OAuth2 callback server. Must match a redirect URI your IdP allows (`http://localhost:<port>/auth/callback`). |
+| `--no-sso-launch-browser` | — | browser launches | Print the authorization URL instead of opening a browser automatically (useful on headless machines). |
+
+> **Notes.** SSO is **stdio-only** — the HTTP/SSE transports cannot open the operator's browser, so they continue to use API tokens. Tokens obtained via SSO are cached on disk (see below) so you are only prompted to log in when there is no valid or refreshable token; the id token is bound to the default base URL exactly like the static default token, so the [token-exfiltration protections](#why-the-default-token-is-bound-to-the-default-base-url) apply unchanged.
+
+**Token cache.** To avoid prompting on every restart, the id and refresh tokens are persisted to a cache file (default `${XDG_CONFIG_HOME:-~/.config}/argocd-mcp/sso-tokens.json`, overridable with `ARGOCD_MCP_SSO_CACHE`). On startup the server reuses the cached token, silently refreshing it with the refresh token when it has expired, and only falls back to the interactive browser login when no usable token can be obtained. The file is a secret and is created with `0600` (owner read/write only) permissions — delete it to force a fresh login.
 
 #### Base URL — header / env var, or per-call argument
 
@@ -317,6 +370,7 @@ To configure credentials, export the relevant environment variable on the comman
 |---|---|
 | `ARGOCD_BASE_URL` | Default ArgoCD instance URL used when a call doesn't override it. |
 | `ARGOCD_API_TOKEN` | Static API token for the default base URL. |
+| `ARGOCD_AUTH_METHOD` | Set to `sso` to authenticate the stdio transport via interactive SSO instead of a static token (equivalent to the `--sso` flag). |
 | `ARGOCD_TOKEN_REGISTRY_PATH` | Path to a JSON [token registry](#token-registry--per-base-url-tokens-multi-instance) mapping base URLs to tokens (for targeting multiple instances). |
 
 ```bash

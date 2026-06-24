@@ -10,14 +10,14 @@ import {
   V1alpha1ApplicationResourceResult,
   V1alpha1ClusterList
 } from '../types/argocd-types.js';
-import { HttpClient } from './http.js';
+import { HttpClient, TokenProvider } from './http.js';
 
 export class ArgoCDClient {
   private baseUrl: string;
-  private apiToken: string;
+  private apiToken: string | TokenProvider;
   private client: HttpClient;
 
-  constructor(baseUrl: string, apiToken: string) {
+  constructor(baseUrl: string, apiToken: string | TokenProvider) {
     this.baseUrl = baseUrl;
     this.apiToken = apiToken;
     this.client = new HttpClient(this.baseUrl, this.apiToken);

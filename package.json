@@ -1,11 +1,14 @@
 {
-  "name": "argocd-mcp",
-  "version": "0.0.0",
+  "name": "@mane-tv2/argocd-mcp",
+  "version": "0.0.1",
   "description": "Argo CD MCP Server",
   "packageManager": "pnpm@10.34.1",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/argoproj-labs/mcp-for-argocd.git"
+    "url": "git+https://github.com/mane-tv2/mcp-for-argocd.git"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   },
   "keywords": [
     "mcp",
